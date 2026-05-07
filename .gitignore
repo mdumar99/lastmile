@@ -1,0 +1,22 @@
+# Build artifacts
+build/
+*.o
+*.a
+*.so
+
+# Generated data (logs regenerate on each run)
+data/logs/
+data/osm/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+
+# VS Code local settings
+.vscode/
+
+# OS junk
+.DS_Store
+Thumbs.db
