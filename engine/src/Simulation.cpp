@@ -7,11 +7,11 @@
 #include <iomanip>
 
 static constexpr float ROBOT_SPEED_MS      = 5.0f;
-static constexpr float MAX_DELIVERY_RADIUS = 800.0f;
+static constexpr float MAX_DELIVERY_RADIUS = 2000.0f;
 
 Simulation::Simulation(SimConfig cfg)
     : _cfg(cfg)
-    , _qt(AABB{500.0f, 500.0f, 2500.0f, 2500.0f})
+    , _qt(AABB{1000.0f, 2000.0f, 6000.0f, 6000.0f})
     , _astar(_graph)
     , _rng(std::random_device{}())
 {
