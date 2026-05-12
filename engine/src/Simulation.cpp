@@ -6,12 +6,12 @@
 #include <algorithm>
 #include <iomanip>
 
-static constexpr float ROBOT_SPEED_MS        = 5.0f;
-static constexpr float MAX_DELIVERY_RADIUS   = 800.0f;
+static constexpr float ROBOT_SPEED_MS      = 5.0f;
+static constexpr float MAX_DELIVERY_RADIUS = 800.0f;
 
 Simulation::Simulation(SimConfig cfg)
     : _cfg(cfg)
-    , _qt(AABB{500.0f, 500.0f, 2000.0f, 2000.0f})
+    , _qt(AABB{500.0f, 500.0f, 2500.0f, 2500.0f})
     , _astar(_graph)
     , _rng(std::random_device{}())
 {
@@ -23,9 +23,8 @@ Simulation::Simulation(SimConfig cfg)
     else
         load_hubs_hardcoded();
 
-    // Spawn robots on random road nodes
     std::uniform_int_distribution<std::size_t> nd(
-        0, _graph.node_ids().size() - 1);
+        0, _graph.node_ids().size()-1);
 
     for (int i = 0; i < cfg.num_robots; ++i) {
         uint32_t    nid = _graph.node_ids()[nd(_rng)];
@@ -48,17 +47,15 @@ Simulation::Simulation(SimConfig cfg)
 
 void Simulation::load_hubs_hardcoded() {
     std::vector<std::pair<float,float>> positions = {
-        {200.0f, 200.0f},
-        {500.0f, 800.0f},
-        {800.0f, 300.0f},
+        {200.0f,200.0f},{500.0f,800.0f},{800.0f,300.0f}
     };
     for (std::size_t i = 0; i < positions.size(); ++i) {
-        auto [hx, hy] = positions[i];
-        uint32_t    nid = _graph.nearest_node(hx, hy);
+        auto [hx,hy] = positions[i];
+        uint32_t    nid = _graph.nearest_node(hx,hy);
         const Node& n   = _graph.node(nid);
-        _hubs.push_back({static_cast<uint32_t>(i), nid, n.x, n.y, 2.0f});
-        std::cout << "[HUB " << i << "] hardcoded -> node " << nid
-                  << " (" << n.x << ", " << n.y << ")\n";
+        _hubs.push_back({static_cast<uint32_t>(i),nid,n.x,n.y,2.0f});
+        std::cout << "[HUB " << i << "] hardcoded -> node "
+                  << nid << " (" << n.x << ", " << n.y << ")\n";
     }
 }
 
@@ -66,29 +63,25 @@ void Simulation::load_hubs_from_csv(const std::string& path) {
     std::ifstream f(path);
     if (!f.is_open())
         throw std::runtime_error("Cannot open hubs CSV: " + path);
-
     std::string line;
-    std::getline(f, line); // header
-
+    std::getline(f, line);
     uint32_t idx = 0;
     while (std::getline(f, line)) {
         std::istringstream ss(line);
         std::string tok;
-
-        std::getline(ss, tok, ','); // hub_id
-        std::getline(ss, tok, ','); uint32_t nid = std::stoul(tok);
-        std::getline(ss, tok, ','); float x      = std::stof(tok);
-        std::getline(ss, tok, ','); float y      = std::stof(tok);
-
-        // Snap to nearest actual graph node
-        uint32_t    snap_nid = _graph.nearest_node(x, y);
-        const Node& n        = _graph.node(snap_nid);
-        _hubs.push_back({idx++, snap_nid, n.x, n.y, 2.0f});
-        std::cout << "[HUB " << idx-1 << "] MILP -> node " << snap_nid
-                  << " (" << n.x << ", " << n.y << ")\n";
+        std::getline(ss,tok,',');
+        std::getline(ss,tok,','); uint32_t nid = std::stoul(tok);
+        std::getline(ss,tok,','); float x      = std::stof(tok);
+        std::getline(ss,tok,','); float y      = std::stof(tok);
+        uint32_t    snap = _graph.nearest_node(x,y);
+        const Node& n    = _graph.node(snap);
+        _hubs.push_back({idx++,snap,n.x,n.y,2.0f});
+        std::cout << "[HUB " << idx-1 << "] MILP -> node "
+                  << snap << " (" << n.x << ", " << n.y << ")\n";
         (void)nid;
     }
-    std::cout << "[HUBS] Loaded " << _hubs.size() << " from " << path << "\n";
+    std::cout << "[HUBS] Loaded " << _hubs.size()
+              << " from " << path << "\n";
 }
 
 void Simulation::run() {
@@ -106,7 +99,6 @@ void Simulation::run() {
             case EventType::ARRIVE:   handle_arrive(e);   break;
             case EventType::RECHARGE: handle_recharge(e); break;
         }
-        maybe_rebuild_quadtree(_event_count);
     }
 
     auto s = stats();
@@ -116,6 +108,7 @@ void Simulation::run() {
     std::cout << "  Energy used      : " << s.total_energy_kwh << " kWh\n";
     std::cout << "  Recharge events  : " << s.recharge_events   << "\n";
     std::cout << "  Failed A* paths  : " << s.failed_paths      << "\n";
+    std::cout << "  Quadtree updates : " << _qt_updates         << "\n";
 }
 
 void Simulation::handle_depart(const Event& e) {
@@ -127,12 +120,12 @@ void Simulation::handle_depart(const Event& e) {
         double travel;
         if (!path.found) {
             ++_stats.failed_paths;
-            travel = distance(_robots.x[rid],_robots.y[rid],h.x,h.y)
-                     / ROBOT_SPEED_MS;
+            travel = distance(_robots.x[rid],_robots.y[rid],
+                              h.x,h.y) / ROBOT_SPEED_MS;
         } else {
             travel = path.distance / ROBOT_SPEED_MS;
             _robots.battery[rid] -= path.distance * _cfg.battery_drain;
-            _robots.battery[rid]  = std::max(0.0f, _robots.battery[rid]);
+            _robots.battery[rid]  = std::max(0.0f,_robots.battery[rid]);
             _robots.total_energy_used[rid] += path.distance * 0.0001f;
         }
         _robots.status[rid] = RobotStatus::RETURNING;
@@ -151,14 +144,13 @@ void Simulation::handle_depart(const Event& e) {
     for (int attempt = 0; attempt < 20; ++attempt) {
         uint32_t    cid = _graph.node_ids()[nd(_rng)];
         const Node& cn  = _graph.node(cid);
-        float dx = cn.x - origin.x, dy = cn.y - origin.y;
-        float d  = std::sqrt(dx*dx + dy*dy);
+        float dx = cn.x-origin.x, dy = cn.y-origin.y;
+        float d  = std::sqrt(dx*dx+dy*dy);
         if (d < MAX_DELIVERY_RADIUS && d > 50.0f && d < best_dist) {
             best_dist = d; dest_nid = cid;
         }
     }
-    if (dest_nid == 0)
-        dest_nid = _graph.node_ids()[nd(_rng)];
+    if (dest_nid == 0) dest_nid = _graph.node_ids()[nd(_rng)];
 
     PathResult path = _astar.find_path(_robot_node[rid], dest_nid);
     if (!path.found) {
@@ -170,10 +162,17 @@ void Simulation::handle_depart(const Event& e) {
     const Node& dest = _graph.node(dest_nid);
     double travel = path.distance / ROBOT_SPEED_MS;
     _robots.battery[rid] -= path.distance * _cfg.battery_drain;
-    _robots.battery[rid]  = std::max(0.0f, _robots.battery[rid]);
+    _robots.battery[rid]  = std::max(0.0f,_robots.battery[rid]);
     _robots.total_energy_used[rid] += path.distance * 0.0001f;
-    _robots.x[rid] = dest.x;
-    _robots.y[rid] = dest.y;
+
+    // ── Dynamic quadtree update (Phase 2) ─────────
+    _qt.update(rid,
+               _robots.x[rid], _robots.y[rid],
+               dest.x, dest.y);
+    ++_qt_updates;
+
+    _robots.x[rid]      = dest.x;
+    _robots.y[rid]      = dest.y;
     _robots.status[rid] = RobotStatus::DELIVERING;
     _sched.push({_now+travel, EventType::ARRIVE, rid, dest_nid});
     log_event(e, "depart->deliver");
@@ -212,7 +211,7 @@ void Simulation::handle_recharge(const Event& e) {
 }
 
 float Simulation::distance(float x1,float y1,float x2,float y2) const {
-    float dx=x2-x1, dy=y2-y1;
+    float dx=x2-x1,dy=y2-y1;
     return std::sqrt(dx*dx+dy*dy);
 }
 
@@ -237,13 +236,6 @@ void Simulation::log_event(const Event& e, const std::string& note) {
          << _robots.battery[rid] << ","
          << statusToString(_robots.status[rid]) << ","
          << note << "\n";
-}
-
-void Simulation::maybe_rebuild_quadtree(int n) {
-    if (n % _cfg.quadtree_rebuild != 0) return;
-    _qt.clear();
-    for (std::size_t i = 0; i < _robots.size(); ++i)
-        _qt.insert(static_cast<uint32_t>(i),_robots.x[i],_robots.y[i]);
 }
 
 Simulation::Stats Simulation::stats() const {

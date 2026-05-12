@@ -22,11 +22,10 @@ struct SimConfig {
     float       world_height     = 1000.0f;
     float       battery_drain    = 0.002f;
     float       low_battery_thr  = 20.0f;
-    int         quadtree_rebuild = 50;
     std::string log_path         = "data/logs/sim_log.csv";
     std::string nodes_csv        = "data/osm/graph_nodes.csv";
     std::string edges_csv        = "data/osm/graph_edges.csv";
-    std::string hubs_csv         = "";   // empty = use hardcoded
+    std::string hubs_csv         = "";
 };
 
 class Simulation {
@@ -56,6 +55,7 @@ private:
     std::vector<uint32_t> _robot_node;
     std::ofstream         _log;
     int                   _event_count{0};
+    int                   _qt_updates{0};   // Phase 2: track dynamic updates
     Stats                 _stats{};
 
     void load_hubs_from_csv(const std::string& path);
@@ -68,5 +68,4 @@ private:
     float  distance(float x1, float y1, float x2, float y2) const;
     Hub&   nearest_hub(float x, float y);
     void   log_event(const Event& e, const std::string& note = "");
-    void   maybe_rebuild_quadtree(int n);
 };
