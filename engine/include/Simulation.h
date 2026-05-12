@@ -18,10 +18,11 @@ struct Hub {
 struct SimConfig {
     int         num_robots       = 50;
     double      sim_duration_s   = 28800.0;
-    float       world_width      = 1000.0f;
-    float       world_height     = 1000.0f;
     float       battery_drain    = 0.002f;
     float       low_battery_thr  = 20.0f;
+    float       traffic_jam_prob = 0.02f;   // probability per depart
+    float       delivery_fail_prob = 0.05f; // probability per arrive
+    float       weather_interval = 3600.0f; // seconds between weather events
     std::string log_path         = "data/logs/sim_log.csv";
     std::string nodes_csv        = "data/osm/graph_nodes.csv";
     std::string edges_csv        = "data/osm/graph_edges.csv";
@@ -38,6 +39,9 @@ public:
         double   total_energy_kwh;
         uint32_t recharge_events;
         uint32_t failed_paths;
+        uint32_t traffic_jams;
+        uint32_t delivery_fails;
+        uint32_t weather_delays;
     };
     Stats stats() const;
 
@@ -55,15 +59,20 @@ private:
     std::vector<uint32_t> _robot_node;
     std::ofstream         _log;
     int                   _event_count{0};
-    int                   _qt_updates{0};   // Phase 2: track dynamic updates
+    int                   _qt_updates{0};
+    float                 _weather_speed_mult{1.0f}; // 1.0=normal, 0.5=slow
     Stats                 _stats{};
 
     void load_hubs_from_csv(const std::string& path);
     void load_hubs_hardcoded();
+    void seed_weather_events();
 
-    void handle_depart  (const Event& e);
-    void handle_arrive  (const Event& e);
-    void handle_recharge(const Event& e);
+    void handle_depart        (const Event& e);
+    void handle_arrive        (const Event& e);
+    void handle_recharge      (const Event& e);
+    void handle_traffic_jam   (const Event& e);
+    void handle_delivery_fail (const Event& e);
+    void handle_weather_delay (const Event& e);
 
     float  distance(float x1, float y1, float x2, float y2) const;
     Hub&   nearest_hub(float x, float y);

@@ -35,14 +35,26 @@ Simulation::Simulation(SimConfig cfg)
         _qt.insert(static_cast<uint32_t>(rid), n.x, n.y);
         double jitter = std::uniform_real_distribution<double>(0.0,5.0)(_rng);
         _sched.push({jitter, EventType::DEPART,
-                     static_cast<uint32_t>(rid), nid});
+                     static_cast<uint32_t>(rid), nid, 0.0f});
     }
+
+    // Seed periodic weather events
+    seed_weather_events();
 
     _log.open(cfg.log_path);
     if (!_log.is_open())
         std::cerr << "[WARN] Could not open log: " << cfg.log_path << "\n";
     else
         _log << "time,event,robot_id,x,y,battery,status,note\n";
+}
+
+void Simulation::seed_weather_events() {
+    // Schedule weather events throughout the simulation
+    double t = _cfg.weather_interval;
+    while (t < _cfg.sim_duration_s) {
+        _sched.push({t, EventType::WEATHER_DELAY, 0, 0, 0.0f});
+        t += _cfg.weather_interval;
+    }
 }
 
 void Simulation::load_hubs_hardcoded() {
@@ -95,25 +107,32 @@ void Simulation::run() {
         _now = e.time;
         ++_event_count;
         switch (e.type) {
-            case EventType::DEPART:   handle_depart(e);   break;
-            case EventType::ARRIVE:   handle_arrive(e);   break;
-            case EventType::RECHARGE: handle_recharge(e); break;
+            case EventType::DEPART:        handle_depart(e);        break;
+            case EventType::ARRIVE:        handle_arrive(e);        break;
+            case EventType::RECHARGE:      handle_recharge(e);      break;
+            case EventType::TRAFFIC_JAM:   handle_traffic_jam(e);   break;
+            case EventType::DELIVERY_FAIL: handle_delivery_fail(e); break;
+            case EventType::WEATHER_DELAY: handle_weather_delay(e); break;
         }
     }
 
     auto s = stats();
     std::cout << "\n[SIM] Done.\n";
-    std::cout << "  Events processed : " << _event_count       << "\n";
-    std::cout << "  Deliveries       : " << s.total_deliveries  << "\n";
-    std::cout << "  Energy used      : " << s.total_energy_kwh << " kWh\n";
-    std::cout << "  Recharge events  : " << s.recharge_events   << "\n";
-    std::cout << "  Failed A* paths  : " << s.failed_paths      << "\n";
-    std::cout << "  Quadtree updates : " << _qt_updates         << "\n";
+    std::cout << "  Events processed : " << _event_count        << "\n";
+    std::cout << "  Deliveries       : " << s.total_deliveries   << "\n";
+    std::cout << "  Delivery fails   : " << s.delivery_fails     << "\n";
+    std::cout << "  Traffic jams     : " << s.traffic_jams       << "\n";
+    std::cout << "  Weather delays   : " << s.weather_delays     << "\n";
+    std::cout << "  Energy used      : " << s.total_energy_kwh  << " kWh\n";
+    std::cout << "  Recharge events  : " << s.recharge_events    << "\n";
+    std::cout << "  Failed A* paths  : " << s.failed_paths       << "\n";
+    std::cout << "  Quadtree updates : " << _qt_updates          << "\n";
 }
 
 void Simulation::handle_depart(const Event& e) {
     uint32_t rid = e.robot_id;
 
+    // Low battery check
     if (_robots.battery[rid] < _cfg.low_battery_thr) {
         Hub& h = nearest_hub(_robots.x[rid], _robots.y[rid]);
         PathResult path = _astar.find_path(_robot_node[rid], h.node_id);
@@ -123,17 +142,30 @@ void Simulation::handle_depart(const Event& e) {
             travel = distance(_robots.x[rid],_robots.y[rid],
                               h.x,h.y) / ROBOT_SPEED_MS;
         } else {
-            travel = path.distance / ROBOT_SPEED_MS;
+            travel = path.distance / (_weather_speed_mult * ROBOT_SPEED_MS);
             _robots.battery[rid] -= path.distance * _cfg.battery_drain;
             _robots.battery[rid]  = std::max(0.0f,_robots.battery[rid]);
             _robots.total_energy_used[rid] += path.distance * 0.0001f;
         }
         _robots.status[rid] = RobotStatus::RETURNING;
-        _sched.push({_now+travel, EventType::ARRIVE, rid, h.node_id});
+        _sched.push({_now+travel, EventType::ARRIVE, rid, h.node_id, 0.0f});
         log_event(e, "low_battery->hub");
         return;
     }
 
+    // Traffic jam check — random chance of jam before departure
+    std::uniform_real_distribution<float> prob(0.0f, 1.0f);
+    if (prob(_rng) < _cfg.traffic_jam_prob) {
+        float jam_duration = std::uniform_real_distribution<float>(30.0f,120.0f)(_rng);
+        _sched.push({_now, EventType::TRAFFIC_JAM, rid,
+                     _robot_node[rid], jam_duration});
+        // Reschedule depart after jam clears
+        _sched.push({_now + jam_duration, EventType::DEPART,
+                     rid, _robot_node[rid], 0.0f});
+        return;
+    }
+
+    // Normal delivery
     const Node& origin = _graph.node(_robot_node[rid]);
     uint32_t dest_nid  = 0;
     float    best_dist = std::numeric_limits<float>::max();
@@ -155,26 +187,25 @@ void Simulation::handle_depart(const Event& e) {
     PathResult path = _astar.find_path(_robot_node[rid], dest_nid);
     if (!path.found) {
         ++_stats.failed_paths;
-        _sched.push({_now+2.0, EventType::DEPART, rid, _robot_node[rid]});
+        _sched.push({_now+2.0, EventType::DEPART, rid,
+                     _robot_node[rid], 0.0f});
         return;
     }
 
     const Node& dest = _graph.node(dest_nid);
-    double travel = path.distance / ROBOT_SPEED_MS;
+    // Weather affects travel speed
+    double travel = path.distance / (_weather_speed_mult * ROBOT_SPEED_MS);
     _robots.battery[rid] -= path.distance * _cfg.battery_drain;
     _robots.battery[rid]  = std::max(0.0f,_robots.battery[rid]);
     _robots.total_energy_used[rid] += path.distance * 0.0001f;
 
-    // ── Dynamic quadtree update (Phase 2) ─────────
-    _qt.update(rid,
-               _robots.x[rid], _robots.y[rid],
-               dest.x, dest.y);
+    _qt.update(rid, _robots.x[rid], _robots.y[rid], dest.x, dest.y);
     ++_qt_updates;
 
     _robots.x[rid]      = dest.x;
     _robots.y[rid]      = dest.y;
     _robots.status[rid] = RobotStatus::DELIVERING;
-    _sched.push({_now+travel, EventType::ARRIVE, rid, dest_nid});
+    _sched.push({_now+travel, EventType::ARRIVE, rid, dest_nid, 0.0f});
     log_event(e, "depart->deliver");
 }
 
@@ -189,15 +220,24 @@ void Simulation::handle_arrive(const Event& e) {
         float  need  = 100.0f - _robots.battery[rid];
         double ctime = need / hub->charge_rate;
         _robots.status[rid] = RobotStatus::CHARGING;
-        _sched.push({_now+ctime, EventType::RECHARGE, rid, e.node_id});
+        _sched.push({_now+ctime, EventType::RECHARGE,
+                     rid, e.node_id, 0.0f});
         ++_stats.recharge_events;
         log_event(e, "arrived_hub");
     } else {
+        // Delivery fail check
+        std::uniform_real_distribution<float> prob(0.0f, 1.0f);
+        if (prob(_rng) < _cfg.delivery_fail_prob) {
+            _sched.push({_now, EventType::DELIVERY_FAIL,
+                         rid, e.node_id, 0.0f});
+            return;
+        }
         ++_robots.deliveries_completed[rid];
         ++_stats.total_deliveries;
         _robots.status[rid] = RobotStatus::IDLE;
         double rest = std::uniform_real_distribution<double>(2.0,8.0)(_rng);
-        _sched.push({_now+rest, EventType::DEPART, rid, e.node_id});
+        _sched.push({_now+rest, EventType::DEPART,
+                     rid, e.node_id, 0.0f});
         log_event(e, "delivered");
     }
 }
@@ -206,8 +246,41 @@ void Simulation::handle_recharge(const Event& e) {
     uint32_t rid = e.robot_id;
     _robots.battery[rid] = 100.0f;
     _robots.status[rid]  = RobotStatus::IDLE;
-    _sched.push({_now+1.0, EventType::DEPART, rid, e.node_id});
+    _sched.push({_now+1.0, EventType::DEPART, rid, e.node_id, 0.0f});
     log_event(e, "fully_charged");
+}
+
+void Simulation::handle_traffic_jam(const Event& e) {
+    ++_stats.traffic_jams;
+    _robots.status[e.robot_id] = RobotStatus::BLOCKED;
+    log_event(e, "traffic_jam_" + std::to_string((int)e.payload) + "s");
+}
+
+void Simulation::handle_delivery_fail(const Event& e) {
+    ++_stats.delivery_fails;
+    uint32_t rid = e.robot_id;
+    _robots.status[rid] = RobotStatus::IDLE;
+    // Robot waits briefly then tries another delivery
+    double rest = std::uniform_real_distribution<double>(5.0,15.0)(_rng);
+    _sched.push({_now+rest, EventType::DEPART, rid, e.node_id, 0.0f});
+    log_event(e, "delivery_failed");
+}
+
+void Simulation::handle_weather_delay(const Event& e) {
+    ++_stats.weather_delays;
+    // Toggle between normal and slow speed
+    std::uniform_real_distribution<float> severity(0.4f, 0.8f);
+    _weather_speed_mult = severity(_rng);
+    // Weather clears after 10-30 minutes
+    double duration = std::uniform_real_distribution<double>(600.0,1800.0)(_rng);
+    // Schedule weather clear
+    _sched.push({_now + duration, EventType::WEATHER_DELAY, 0, 0, 1.0f});
+    log_event(e, "weather_speed_" + std::to_string(_weather_speed_mult).substr(0,4));
+
+    // If payload = 1.0 it's a clear event
+    if (e.payload > 0.5f) {
+        _weather_speed_mult = 1.0f;
+    }
 }
 
 float Simulation::distance(float x1,float y1,float x2,float y2) const {
