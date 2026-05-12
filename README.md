@@ -205,3 +205,41 @@ no subprocess, no CSV intermediary, same memory space.
       Sweet spot: 20-30% threshold
       Below 10%: robots run too flat before recharging
       Above 30%: over-conservative recharging hurts throughput
+
+---
+
+## Milestone 5 — Deck.gl Web Dashboard
+
+**What it does:** Interactive web dashboard showing simulation results
+on a real Singapore map. Toggle between hardcoded and MILP hub scenarios,
+switch between delivery heatmap and live robot positions.
+
+**Stack:**
+- React 18 + Deck.gl + MapLibre GL (dark CartoDB basemap)
+- Data exported from C++ simulation via pybind11 bridge
+- No backend needed — runs entirely from static JSON
+
+**Features:**
+- Heatmap layer: delivery density on real Toa Payoh streets
+- Robot layer: last known position of all 50 robots, colour-coded by status
+  (green = delivering, blue = idle, yellow = charging)
+- Hub markers: yellow triangles at hub locations
+- Toggle: Hardcoded Hubs vs MILP Optimised Hubs
+- KPI cards: deliveries, energy, recharges, 26% MILP cost saving
+- Throughput bars: deliveries per simulated hour, both scenarios
+
+**Run the dashboard:**
+
+    # Export simulation data (runs both sims via pybind11 bridge)
+    cd ~/lastmile
+    python3 scripts/export_dashboard_data.py
+
+    # Start dev server
+    cd dashboard && npm start
+
+    # Open in browser
+    http://localhost:3000
+
+**Install dashboard dependencies (first time):**
+
+    cd dashboard && npm install --legacy-peer-deps
