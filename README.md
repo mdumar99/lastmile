@@ -166,3 +166,42 @@ total weighted travel distance.
     python3 scripts/visualize_comparison.py   # before vs after dashboard
 
     # All images saved to data/logs/
+
+---
+
+## Milestone 4 — pybind11 Bridge + Python Experiment Runner
+
+**What it does:** Exposes the C++ simulation engine as a native Python
+module. Python calls directly into C++ with zero-copy overhead —
+no subprocess, no CSV intermediary, same memory space.
+
+**Bridge API:**
+
+    import lastmile
+
+    engine = lastmile.SimEngine(robots=50, duration=3600, low_battery=20.0)
+    engine.set_hubs_csv("data/orders/hubs_optimised.csv")  # optional
+    engine.set_log_path("data/logs/run.csv")
+    engine.run()
+    stats = engine.get_stats()
+    # stats = {"deliveries": N, "energy_kwh": X, "recharges": N, "failed_paths": N}
+
+**Build the bridge:**
+
+    cd build && make -j$(nproc)
+    cp build/bridge/lastmile.so .
+
+**Experiment results (ai_layer/run_experiments.py):**
+
+    Experiment 1 — Fleet scaling (10-200 robots, 1 hour):
+      Deliveries scale linearly (~41/robot/hour)
+      Energy per delivery improves at larger fleets (economies of scale)
+
+    Experiment 2 — Hub strategy vs duration (50 robots, 0.5h-8h):
+      MILP advantage strongest at 8h: +730 deliveries (+4.2%)
+      Short durations: hub placement less significant
+
+    Experiment 3 — Battery threshold sensitivity (50 robots, 1 hour):
+      Sweet spot: 20-30% threshold
+      Below 10%: robots run too flat before recharging
+      Above 30%: over-conservative recharging hurts throughput
