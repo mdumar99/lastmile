@@ -16,3 +16,4 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release")
 endif()
 
 add_subdirectory(engine)
+add_subdirectory(bridge)
