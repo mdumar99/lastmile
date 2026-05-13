@@ -1,4 +1,5 @@
 find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
+find_package(TBB REQUIRED)
 
 execute_process(
     COMMAND ${Python3_EXECUTABLE} -c "import pybind11; print(pybind11.get_include())"
@@ -8,7 +9,6 @@ execute_process(
 
 message(STATUS "pybind11 include: ${PYBIND11_INCLUDE}")
 
-# Shared library — Python imports this as 'lastmile'
 add_library(lastmile MODULE
     bindings.cpp
     ../engine/src/Robot.cpp
@@ -25,9 +25,11 @@ target_include_directories(lastmile PRIVATE
     ${PYBIND11_INCLUDE}
 )
 
-target_link_libraries(lastmile PRIVATE ${Python3_LIBRARIES})
+target_link_libraries(lastmile PRIVATE
+    ${Python3_LIBRARIES}
+    TBB::tbb
+)
 
-# Python modules have no 'lib' prefix and use .so extension
 set_target_properties(lastmile PROPERTIES
     PREFIX ""
     SUFFIX ".so"

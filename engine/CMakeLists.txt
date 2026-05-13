@@ -1,3 +1,5 @@
+find_package(TBB REQUIRED)
+
 add_executable(lastmile_engine
   src/main.cpp
   src/Robot.cpp
@@ -9,3 +11,4 @@ add_executable(lastmile_engine
 )
 
 target_include_directories(lastmile_engine PRIVATE include)
+target_link_libraries(lastmile_engine PRIVATE TBB::tbb)
