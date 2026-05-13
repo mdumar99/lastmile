@@ -21,3 +21,5 @@ __pycache__/
 .DS_Store
 Thumbs.db
 dashboard/node_modules/
+ai_layer/rl/experience*.json
+ai_layer/rl/*.npy
