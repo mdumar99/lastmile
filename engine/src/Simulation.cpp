@@ -14,6 +14,7 @@ Simulation::Simulation(SimConfig cfg)
     , _qt(AABB{1000.0f, 2000.0f, 6000.0f, 6000.0f})
     , _astar(_graph)
     , _planner(_graph)
+    , _proto(cfg.proto_path)
     , _rng(std::random_device{}())
 {
     if (!_graph.load(cfg.nodes_csv, cfg.edges_csv))
@@ -137,6 +138,19 @@ void Simulation::run() {
     std::cout << "  Failed A* paths   : " << s.failed_paths       << "\n";
     std::cout << "  Quadtree updates  : " << _qt_updates          << "\n";
     std::cout << "  Parallel batches  : " << s.parallel_batches   << "\n";
+
+    // Write protobuf output
+    if (_proto.enabled()) {
+        _proto.set_stats(s.total_deliveries, s.total_energy_kwh,
+                         s.recharge_events, s.failed_paths,
+                         s.traffic_jams, s.delivery_fails,
+                         s.weather_delays, s.parallel_batches);
+        _proto.set_meta(_cfg.num_robots, _cfg.sim_duration_s,
+                        _cfg.hubs_csv.empty() ? "hardcoded" : "milp");
+        if (_proto.write())
+            std::cout << "  Proto written     : " << _cfg.proto_path
+                      << " (" << _proto.event_count() << " events)\n";
+    }
 }
 
 // ── Parallel path planning flush ──────────────────────────────
@@ -333,6 +347,22 @@ Hub& Simulation::nearest_hub(float x, float y) {
 }
 
 void Simulation::log_event(const Event& e, const std::string& note) {
+    // Write to protobuf
+    if (_proto.enabled()) {
+        uint32_t rid = e.robot_id;
+        _proto.add_event(_now, eventTypeToString(e.type), rid,
+                         _robots.x[rid], _robots.y[rid],
+                         _robots.battery[rid],
+                         statusToString(_robots.status[rid]), note);
+    }
+    // Write to protobuf
+    if (_proto.enabled()) {
+        uint32_t rid = e.robot_id;
+        _proto.add_event(_now, eventTypeToString(e.type), rid,
+                         _robots.x[rid], _robots.y[rid],
+                         _robots.battery[rid],
+                         statusToString(_robots.status[rid]), note);
+    }
     if (!_log.is_open()) return;
     uint32_t rid = e.robot_id;
     _log << _now << ","

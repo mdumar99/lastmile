@@ -5,6 +5,7 @@
 #include "RoadGraph.h"
 #include "AStar.h"
 #include "ParallelPlanner.h"
+#include "ProtoWriter.h"
 #include <string>
 #include <fstream>
 #include <random>
@@ -26,6 +27,7 @@ struct SimConfig {
     float       weather_interval   = 3600.0f;
     int         parallel_batch     = 32;
     std::string log_path           = "data/logs/sim_log.csv";
+    std::string proto_path         = "";   // empty = disabled
     std::string nodes_csv          = "data/osm/graph_nodes.csv";
     std::string edges_csv          = "data/osm/graph_edges.csv";
     std::string hubs_csv           = "";
@@ -56,6 +58,7 @@ private:
     RoadGraph       _graph;
     AStar           _astar;
     ParallelPlanner _planner;
+    ProtoWriter     _proto;
     double          _now{0.0};
     std::mt19937    _rng;
 

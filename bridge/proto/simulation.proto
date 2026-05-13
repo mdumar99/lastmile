@@ -1,0 +1,36 @@
+syntax = "proto3";
+
+package lastmile;
+
+// A single simulation event
+message SimEvent {
+  double   time      = 1;
+  string   type      = 2;
+  uint32   robot_id  = 3;
+  float    x         = 4;
+  float    y         = 5;
+  float    battery   = 6;
+  string   status    = 7;
+  string   note      = 8;
+}
+
+// End-of-run statistics
+message SimStats {
+  uint32 total_deliveries  = 1;
+  double total_energy_kwh  = 2;
+  uint32 recharge_events   = 3;
+  uint32 failed_paths      = 4;
+  uint32 traffic_jams      = 5;
+  uint32 delivery_fails    = 6;
+  uint32 weather_delays    = 7;
+  uint32 parallel_batches  = 8;
+}
+
+// Full simulation output — events + stats in one message
+message SimOutput {
+  repeated SimEvent events = 1;
+  SimStats          stats  = 2;
+  uint32            num_robots    = 3;
+  double            duration_s    = 4;
+  string            hub_mode      = 5;
+}
