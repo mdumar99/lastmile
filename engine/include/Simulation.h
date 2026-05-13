@@ -9,6 +9,7 @@
 #include <string>
 #include <fstream>
 #include <random>
+#include <vector>
 
 struct Hub {
     uint32_t id;
@@ -27,7 +28,7 @@ struct SimConfig {
     float       weather_interval   = 3600.0f;
     int         parallel_batch     = 32;
     std::string log_path           = "data/logs/sim_log.csv";
-    std::string proto_path         = "";   // empty = disabled
+    std::string proto_path         = "";
     std::string nodes_csv          = "data/osm/graph_nodes.csv";
     std::string edges_csv          = "data/osm/graph_edges.csv";
     std::string hubs_csv           = "";
@@ -49,6 +50,10 @@ public:
         uint32_t parallel_batches;
     };
     Stats stats() const;
+
+    // ── RL query methods ──────────────────────────────────────
+    std::vector<std::vector<float>> get_robot_states_raw() const;
+    std::vector<int>                get_hub_queue_lengths() const;
 
 private:
     SimConfig       _cfg;

@@ -382,3 +382,38 @@ Simulation::Stats Simulation::stats() const {
         s.total_energy_kwh += v;
     return s;
 }
+
+// ── RL query methods ──────────────────────────────────────────
+
+std::vector<std::vector<float>> Simulation::get_robot_states_raw() const {
+    std::vector<std::vector<float>> out;
+    out.reserve(_robots.size());
+    for (std::size_t i = 0; i < _robots.size(); ++i) {
+        out.push_back({
+            _robots.x[i],
+            _robots.y[i],
+            _robots.battery[i],
+            static_cast<float>(static_cast<uint8_t>(_robots.status[i]))
+        });
+    }
+    return out;
+}
+
+std::vector<int> Simulation::get_hub_queue_lengths() const {
+    std::vector<int> queues(_hubs.size(), 0);
+    for (std::size_t i = 0; i < _robots.size(); ++i) {
+        if (_robots.status[i] == RobotStatus::CHARGING) {
+            // Find which hub this robot is at
+            float best_d = std::numeric_limits<float>::max();
+            int   best_h = 0;
+            for (std::size_t h = 0; h < _hubs.size(); ++h) {
+                float dx = _robots.x[i] - _hubs[h].x;
+                float dy = _robots.y[i] - _hubs[h].y;
+                float d  = dx*dx + dy*dy;
+                if (d < best_d) { best_d = d; best_h = (int)h; }
+            }
+            queues[best_h]++;
+        }
+    }
+    return queues;
+}
