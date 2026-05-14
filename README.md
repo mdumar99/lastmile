@@ -12,17 +12,19 @@ a high-performance C++20 engine and a Python analytics/optimisation stack.
     │   │                # RoadGraph, AStar, ParallelPlanner, ProtoWriter
     │   └── src/         # Implementations + main.cpp + simulation.pb.cc
     ├── or_module/       # MILP hub optimiser (HiGHS) + rolling MILP
-    ├── ai_layer/        # Python experiment runner via pybind11 bridge
+    ├── ai_layer/        # Python experiment runner + offline RL pipeline
+    │   └── rl/          # Experience collection, training, evaluation
     ├── bridge/          # pybind11 C++↔Python bridge + Protobuf schema
     │   └── proto/       # simulation.proto + generated bindings
     ├── dashboard/       # React + Deck.gl web dashboard
+    ├── opengl_view/     # C++ OpenGL engineering view (GLFW + GLEW)
     ├── scripts/         # Python visualisation + OSM utilities
     └── data/
         ├── osm/         # OpenStreetMap extracts (not committed)
         ├── orders/      # Simulated orders + MILP hub outputs
         └── logs/        # Simulation output CSVs/proto (not committed)
 
-## Phase 1 — Complete
+##  Completed
 
     C++ Engine            SoA layout, DES priority queue, quadtree, rule-based agent
     OSM + A*              Real Singapore roads, A* pathfinding, 0 failed paths
@@ -30,35 +32,41 @@ a high-performance C++20 engine and a Python analytics/optimisation stack.
     pybind11 bridge       Python calling C++ directly, experiment runner
     Deck.gl dashboard     Interactive map, heatmap, before/after KPIs
 
-## Phase 2 — Complete
-
     Dynamic quadtree      Per-move update instead of full rebuild (2.4x faster)
     Full event taxonomy   TRAFFIC_JAM, DELIVERY_FAIL, WEATHER_DELAY added
-    Multi-district OSM    5,000 -> 50,000 nodes, 6.7km x 10.6km Singapore
+    Multi-district OSM    50,000 -> 681,369 nodes, full Singapore island 47.7km x 28.2km
     TBB parallelism       Parallel A* via Intel TBB: 500 robots 3.9s -> 1.6s
     Rolling MILP          Re-optimises hubs every 30 days as demand shifts
     Protobuf bridge       Binary simulation output, Python reads via _pb2
 
-## Phase 3 — Planned (feature branches)
+## In Progress
 
-    feature/offline-rl    Train RL policy on Phase 1 logs, evaluate vs rule-based
-    feature/gurobi        Swap HiGHS for Gurobi (academic license)
-    feature/opengl-view   C++ engineering view alongside Deck.gl dashboard
+    feature/offline-rl    merged — behavioural cloning policy, +3.9% deliveries
+                              zone-gated policy outperforms rule-based in live sim
+                              full ANALYSIS.md documenting what worked and what didn't
+    feature/opengl-view   in progress — C++ OpenGL engineering view
+                              robots rendered as coloured dots on dark background
+                              hub markers as yellow triangles, auto-scaling world bounds
+                              road network overlay deferred (next session)
+    online-rl             planned — restructure engine with step() interface
+                              enable episode-by-episode online RL training
 
 ---
 
 ## Key Results
 
-    Metric                         Value
-    Singapore road nodes parsed    785,200
-    Simulation subgraph            50,000 nodes, 112,614 edges
-    Coverage                       6.7km x 10.6km (central Singapore)
-    Max robots tested              2,000
-    Events at 2000 robots (1h)     76,697
-    Wall time at 2000 robots       5.89s (TBB, ~4 cores)
-    Failed A* paths                0 (across all runs)
-    MILP improvement               26.0% reduction in weighted travel distance
-    TBB speedup (500 robots)       3.9s -> 1.6s (2.4x)
+    Metric                           Value
+    Singapore road nodes parsed      785,200
+    Simulation subgraph              681,369 nodes, 1,543,768 edges
+    Coverage                         47.7km x 28.2km (full Singapore island)
+    Max robots tested                2,000
+    Events at 2000 robots (1h)       76,697
+    Wall time at 2000 robots         5.89s (TBB, ~4 cores)
+    Failed A* paths (full island)    <1.5% across all scales
+    MILP improvement                 26.0% reduction in weighted travel distance
+    TBB speedup (500 robots)         3.9s -> 1.6s (2.4x)
+    RL policy improvement            +3.9% deliveries (zone-gated, 3-seed average)
+    RL policy energy trade-off       +3.3% energy (acceptable operational cost)
 
 ---
 
@@ -72,12 +80,13 @@ a high-performance C++20 engine and a Python analytics/optimisation stack.
 ### System dependencies
 
     sudo apt install -y build-essential g++-13 cmake python3 python3-pip \
-                        git libtbb-dev libprotobuf-dev protobuf-compiler
+                        git libtbb-dev libprotobuf-dev protobuf-compiler \
+                        libglfw3-dev libglew-dev libglm-dev
 
 ### Python dependencies
 
-    pip3 install pandas matplotlib osmium networkx highspy pybind11 protobuf \
-                 --break-system-packages
+    pip3 install pandas matplotlib osmium networkx highspy pybind11 \
+                 protobuf torch scikit-learn --break-system-packages
 
 ### Build
 
@@ -87,14 +96,14 @@ a high-performance C++20 engine and a Python analytics/optimisation stack.
     cd ..
     cp build/bridge/lastmile.so .
 
-### OSM setup (one-time, ~5 minutes)
+### OSM setup (one-time, ~10 minutes)
 
     cd data/osm
     wget "https://download.geofabrik.de/asia/malaysia-singapore-brunei-latest.osm.pbf" \
          -O region.osm.pbf
     cd ../..
-    python3 scripts/parse_osm.py
-    python3 scripts/sample_graph.py
+    python3 scripts/parse_osm.py      # extracts 785k Singapore nodes
+    python3 scripts/sample_graph.py   # BFS samples full island (681k nodes)
 
 ---
 
@@ -120,7 +129,23 @@ a high-performance C++20 engine and a Python analytics/optimisation stack.
     # Examples
     ./build/engine/lastmile_engine 50 3600       # 50 robots, 1 hour
     ./build/engine/lastmile_engine 500 3600      # 500 robots, 1 hour
-    ./build/engine/lastmile_engine 2000 3600     # 2000 robots, 1 hour
+    ./build/engine/lastmile_engine 1000 3600     # 1000 robots, 1 hour
+
+## OpenGL Engineering View
+
+    # Run simulation with live OpenGL window
+    ./build/opengl_view/lastmile_gl [robots] [duration_seconds]
+
+    # Example
+    ./build/opengl_view/lastmile_gl 100 3600
+
+    # Colour coding:
+    #   Green  = delivering
+    #   Blue   = idle
+    #   Orange = returning to hub
+    #   Yellow = charging
+    #   Red    = blocked
+    #   Yellow triangles = hub locations
 
 ## OR Module
 
@@ -133,6 +158,23 @@ a high-performance C++20 engine and a Python analytics/optimisation stack.
     # Run rolling MILP (re-optimises every 30 days)
     python3 or_module/rolling_milp.py
 
+## Offline RL Pipeline
+
+    # Collect experience tuples from rule-based agent
+    python3 ai_layer/rl/collect_experience_v2.py
+
+    # Train policy (3 architectures compared)
+    python3 ai_layer/rl/train_policy_v2.py
+
+    # Evaluate statistically
+    python3 ai_layer/rl/evaluate_policy.py
+
+    # Run live simulation with RL policy hooked into C++ engine
+    python3 ai_layer/rl/run_policy_simulation_v3.py
+
+    # Read full analysis
+    cat ai_layer/rl/ANALYSIS.md
+
 ## Python Bridge
 
     import lastmile
@@ -143,136 +185,75 @@ a high-performance C++20 engine and a Python analytics/optimisation stack.
                                 fail_prob=0.05)
     engine.set_hubs_csv("data/orders/hubs_optimised.csv")
     engine.set_log_path("data/logs/run.csv")
+    engine.set_policy(my_policy_fn)   # optional RL policy callback
     engine.run()
     stats = engine.get_stats()
-    # keys: deliveries, energy_kwh, recharges, failed_paths,
-    #       traffic_jams, delivery_fails, weather_delays, parallel_batches
-
-    # Run all experiments
-    python3 ai_layer/run_experiments.py
 
 ## Protobuf Bridge
 
-    # Run simulation with binary output
     ./build/engine/lastmile_engine 50 3600 --proto data/logs/sim_output.pb
 
-    # Read from Python
-    import sys
-    sys.path.insert(0, "bridge/proto")
+    import sys; sys.path.insert(0, "bridge/proto")
     from simulation_pb2 import SimOutput
-
     with open("data/logs/sim_output.pb", "rb") as f:
         output = SimOutput()
         output.ParseFromString(f.read())
-
     print(output.stats.total_deliveries)
-    print(output.events[0].type)
 
 ## Visualisation
 
     python3 scripts/visualize.py              # throughput + battery + heatmap
     python3 scripts/visualize_overlay.py      # robot activity on real streets
-    python3 scripts/visualize_graph.py        # road network
     python3 scripts/visualize_comparison.py   # before vs after dashboard
     python3 scripts/export_dashboard_data.py  # export JSON for Deck.gl
 
-    # Start Deck.gl dashboard
-    cd dashboard && npm start
+    cd dashboard && npm start                 # Deck.gl map dashboard
     # Open http://localhost:3000
-
-
-
-
 
 ---
 
 ## How the System Works Together
 
-The project is split into two layers that communicate through two bridges:
-
     C++ Engine  ←→  pybind11 bridge  ←→  Python AI / OR layer
     C++ Engine  ←→  Protobuf bridge  ←→  Python analytics / dashboard
+    C++ Engine  ←→  OpenGL view      ←→  Real-time engineering display
 
 ### The C++ Engine (Brawn)
 
-The engine runs entirely in C++ and owns all performance-critical work:
-
-    main.cpp
+    main.cpp / lastmile_gl
       └── Simulation
-            ├── RoadGraph      loads 50,000 Singapore road nodes + 112,614 edges
-            ├── AStar          finds shortest path between any two road nodes
-            ├── ParallelPlanner  batches A* calls, solves in parallel via TBB
-            ├── Quadtree       spatial index — updates per robot move, not full rebuild
-            ├── EventScheduler priority queue — jumps between events, no fixed tick
-            ├── RobotPool      Struct of Arrays layout for cache-efficient updates
-            └── ProtoWriter    serialises events to binary protobuf at end of run
-
-At each simulated event:
-  1. EventScheduler pops the earliest event (DEPART / ARRIVE / RECHARGE /
-     TRAFFIC_JAM / DELIVERY_FAIL / WEATHER_DELAY)
-  2. The handler decides what to do (deliver, recharge, wait, retry)
-  3. PathRequests accumulate in a batch; when the batch is full,
-     ParallelPlanner solves all paths simultaneously across CPU cores
-  4. Results feed back into EventScheduler as future ARRIVE events
-  5. Every robot move calls Quadtree.update() — surgical re-index, not full rebuild
-  6. Events are logged to CSV and/or Protobuf binary
+            ├── RoadGraph        681,369 Singapore road nodes, 1,543,768 edges
+            ├── AStar            A* with max_dist cutoff for island-scale search
+            ├── ParallelPlanner  TBB parallel A* across CPU cores
+            ├── Quadtree         dynamic per-move spatial index
+            ├── EventScheduler   DES priority queue (6 event types)
+            ├── RobotPool        Struct of Arrays for cache efficiency
+            ├── ProtoWriter      binary output via Protobuf
+            └── DecisionCallback RL policy hook (Python callable)
 
 ### The Python Layer (Brain)
 
-Python owns everything above the raw simulation:
+    or_module/     MILP facility location, rolling monthly re-optimisation
+    ai_layer/      pybind11 experiments, offline RL pipeline
+    scripts/       OSM parsing, visualisation, dashboard export
+    dashboard/     React + Deck.gl interactive Singapore map
 
-    or_module/
-      generate_orders.py   →  16,500 simulated orders with realistic demand patterns
-      optimise_hubs.py     →  MILP facility location (HiGHS), 205,800 variables
-      rolling_milp.py      →  re-runs MILP every 30 days as demand shifts
-
-    ai_layer/
-      run_experiments.py   →  calls C++ engine via pybind11, varies parameters,
-                               collects stats, plots results
-
-    scripts/
-      parse_osm.py         →  extracts Singapore roads from 234MB OSM file
-      sample_graph.py      →  BFS samples 50,000 connected nodes
-      export_dashboard_data.py  →  runs both simulations, converts XY to lat/lon,
-                                    exports 526KB JSON for Deck.gl
-
-    dashboard/
-      App.js               →  React + Deck.gl, reads simulation.json,
-                               renders heatmap + robot positions on Singapore map
-
-### The Two Bridges
-
-    pybind11 bridge (lastmile.so)
-      Python imports lastmile.so like any Python module.
-      SimEngine.run() calls directly into C++ — same process, same memory.
-      No subprocess, no serialisation overhead during the run.
-      Stats are returned as a Python dict when the run completes.
-
-    Protobuf bridge (simulation.pb / simulation_pb2.py)
-      C++ writes binary SimOutput to disk at end of run.
-      Python reads it via generated _pb2 bindings — typed fields, no CSV parsing.
-      Schema defined in simulation.proto — adding fields is backward compatible.
-
-### Data Flow (end to end)
+### Data Flow
 
     OSM file (234MB)
-        → parse_osm.py → nodes.csv + edges.csv (785k nodes)
-        → sample_graph.py → graph_nodes.csv + graph_edges.csv (50k nodes)
-        → RoadGraph.cpp (loaded at engine startup)
+        → parse_osm.py → 785k nodes
+        → sample_graph.py → 681k connected nodes (full island)
+        → RoadGraph.cpp
 
     generate_orders.py → orders.csv (16,500 orders, 90 days)
-        → optimise_hubs.py → hubs_optimised.csv (3 hub locations)
-        → rolling_milp.py → rolling_hubs_latest.csv (re-optimised monthly)
+        → optimise_hubs.py → hubs_optimised.csv
+        → rolling_milp.py → rolling_hubs_latest.csv
 
-    C++ engine (reads graph + hubs, runs DES)
-        → sim_log.csv (human-readable events)
-        → sim_output.pb (binary events + stats)
-        → pybind11 stats dict (in-memory, no file)
+    C++ engine
+        → sim_log.csv
+        → sim_output.pb
+        → pybind11 stats dict
+        → OpenGL window
 
-    export_dashboard_data.py (reads CSVs, runs engine via pybind11)
-        → simulation.json (526KB, lat/lon converted)
-        → dashboard/public/data/simulation.json
-
-    React dashboard (reads simulation.json)
-        → Deck.gl heatmap + robot layer on Singapore map
-        → KPI cards, throughput charts, before/after toggle
+    export_dashboard_data.py
+        → simulation.json → Deck.gl dashboard
