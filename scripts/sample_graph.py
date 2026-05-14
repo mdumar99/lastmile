@@ -14,7 +14,7 @@ EDGES_IN   = "data/osm/edges.csv"
 NODES_OUT  = "data/osm/graph_nodes.csv"
 EDGES_OUT  = "data/osm/graph_edges.csv"
 
-TARGET_NODES = 50000  # Phase 2: 10x larger than Phase 1
+TARGET_NODES = 785200  # Phase 2: 10x larger than Phase 1
 
 # Singapore main island centre
 CENTRE_LAT = 1.3521

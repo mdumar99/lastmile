@@ -7,11 +7,11 @@
 #include <iomanip>
 
 static constexpr float ROBOT_SPEED_MS      = 5.0f;
-static constexpr float MAX_DELIVERY_RADIUS = 2000.0f;
+static constexpr float MAX_DELIVERY_RADIUS = 8000.0f;
 
 Simulation::Simulation(SimConfig cfg)
     : _cfg(cfg)
-    , _qt(AABB{1000.0f, 2000.0f, 6000.0f, 6000.0f})
+    , _qt(AABB{500.0f, -1000.0f, 26000.0f, 16000.0f})
     , _astar(_graph)
     , _planner(_graph)
     , _proto(cfg.proto_path)
@@ -229,12 +229,12 @@ void Simulation::handle_depart(const Event& e) {
     std::uniform_int_distribution<std::size_t> nd(
         0, _graph.node_ids().size()-1);
 
-    for (int attempt = 0; attempt < 20; ++attempt) {
+    for (int attempt = 0; attempt < 50; ++attempt) {
         uint32_t    cid = _graph.node_ids()[nd(_rng)];
         const Node& cn  = _graph.node(cid);
         float dx = cn.x-origin.x, dy = cn.y-origin.y;
         float d  = std::sqrt(dx*dx+dy*dy);
-        if (d < MAX_DELIVERY_RADIUS && d > 50.0f && d < best_dist) {
+        if (d < MAX_DELIVERY_RADIUS && d > 100.0f && d < best_dist) {
             best_dist = d; dest_nid = cid;
         }
     }
@@ -250,7 +250,7 @@ void Simulation::flush_pending_departs() {
     requests.reserve(_pending_departs.size());
     for (const auto& pd : _pending_departs)
         requests.push_back({pd.event.robot_id,
-                            _robot_node[pd.event.robot_id], pd.dest_nid});
+                            _robot_node[pd.event.robot_id], pd.dest_nid, MAX_DELIVERY_RADIUS});
 
     auto responses = _planner.plan(requests);
     ++_stats.parallel_batches;

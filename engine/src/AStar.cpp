@@ -14,7 +14,8 @@ float AStar::heuristic(uint32_t a, uint32_t b) const {
     return std::sqrt(dx*dx + dy*dy);
 }
 
-PathResult AStar::find_path(uint32_t from, uint32_t to) const {
+PathResult AStar::find_path(uint32_t from, uint32_t to,
+                             float max_dist) const {
     if (from == to)
         return {{from}, 0.0f, true};
 
@@ -34,12 +35,15 @@ PathResult AStar::find_path(uint32_t from, uint32_t to) const {
         auto [f, current] = open.top();
         open.pop();
 
+        // Early exit if f_score exceeds max_dist
+        if (max_dist > 0.0f && f > max_dist * 1.5f)
+            return {{}, 0.0f, false};
+
         if (current == to) {
             PathResult result;
             result.found    = true;
             result.distance = g_score[to];
-
-            uint32_t node = to;
+            uint32_t node   = to;
             while (node != from) {
                 result.nodes.push_back(node);
                 node = came_from[node];
@@ -51,10 +55,18 @@ PathResult AStar::find_path(uint32_t from, uint32_t to) const {
 
         float g_cur = g_score.count(current) ? g_score[current] : INF;
 
+        // Prune: if g_score already exceeds max_dist, skip
+        if (max_dist > 0.0f && g_cur > max_dist)
+            continue;
+
         for (const Edge& e : _graph.neighbours(current)) {
             float tentative_g = g_cur + e.distance_m;
-            float known_g     = g_score.count(e.to) ? g_score[e.to] : INF;
 
+            // Skip if already over max_dist
+            if (max_dist > 0.0f && tentative_g > max_dist)
+                continue;
+
+            float known_g = g_score.count(e.to) ? g_score[e.to] : INF;
             if (tentative_g < known_g) {
                 came_from[e.to] = current;
                 g_score[e.to]   = tentative_g;
