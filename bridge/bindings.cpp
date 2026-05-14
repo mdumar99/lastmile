@@ -1,5 +1,6 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
+#include <pybind11/functional.h>
 #include "Simulation.h"
 
 namespace py = pybind11;
@@ -24,8 +25,34 @@ public:
     void set_log_path  (const std::string& p) { _cfg.log_path   = p; }
     void set_proto_path(const std::string& p) { _cfg.proto_path = p; }
 
+    // Register a Python callable as the decision policy
+    void set_policy(py::function fn) {
+        _policy_fn = fn;
+        _has_policy = true;
+    }
+
     void run() {
         _sim = std::make_unique<Simulation>(_cfg);
+
+        if (_has_policy) {
+            _sim->set_decision_callback(
+                [this](const RobotDecisionState& s) -> int {
+                    py::gil_scoped_acquire gil;
+                    try {
+                        return _policy_fn(
+                            s.robot_id, s.battery,
+                            s.x, s.y, s.hub_dist,
+                            s.weather_mult, s.sim_time,
+                            s.deliveries_done, s.recharges_done,
+                            s.nearby_robots, s.max_hub_queue
+                        ).cast<int>();
+                    } catch (...) {
+                        return 0; // fallback: deliver
+                    }
+                }
+            );
+        }
+
         _sim->run();
         _ran = true;
     }
@@ -42,16 +69,15 @@ public:
         d["delivery_fails"]   = s.delivery_fails;
         d["weather_delays"]   = s.weather_delays;
         d["parallel_batches"] = s.parallel_batches;
+        d["policy_decisions"] = s.policy_decisions;
         return d;
     }
 
-    // Returns [[x, y, battery, status_int], ...] for all robots
     std::vector<std::vector<float>> get_robot_states() {
         if (!_ran) throw std::runtime_error("Call run() first");
         return _sim->get_robot_states_raw();
     }
 
-    // Returns [queue_len_hub0, queue_len_hub1, queue_len_hub2]
     std::vector<int> get_hub_queue_lengths() {
         if (!_ran) throw std::runtime_error("Call run() first");
         return _sim->get_hub_queue_lengths();
@@ -60,6 +86,8 @@ public:
 private:
     SimConfig                   _cfg;
     std::unique_ptr<Simulation> _sim;
+    py::function                _policy_fn;
+    bool                        _has_policy{false};
     bool                        _ran{false};
 };
 
@@ -73,11 +101,17 @@ PYBIND11_MODULE(lastmile, m) {
              py::arg("low_battery") = 20.0,
              py::arg("jam_prob")    = 0.02f,
              py::arg("fail_prob")   = 0.05f)
-        .def("set_hubs_csv",        &SimEngine::set_hubs_csv)
-        .def("set_log_path",        &SimEngine::set_log_path)
-        .def("set_proto_path",      &SimEngine::set_proto_path)
-        .def("run",                 &SimEngine::run)
-        .def("get_stats",           &SimEngine::get_stats)
-        .def("get_robot_states",    &SimEngine::get_robot_states)
+        .def("set_hubs_csv",         &SimEngine::set_hubs_csv)
+        .def("set_log_path",         &SimEngine::set_log_path)
+        .def("set_proto_path",       &SimEngine::set_proto_path)
+        .def("set_policy",           &SimEngine::set_policy,
+             "Register Python callable as decision policy.\n"
+             "Signature: fn(robot_id, battery, x, y, hub_dist,\n"
+             "              weather, sim_time, deliveries,\n"
+             "              recharges, nearby, max_queue) -> int\n"
+             "Returns: 0=DELIVER, 1=RECHARGE, 2=WAIT")
+        .def("run",                  &SimEngine::run)
+        .def("get_stats",            &SimEngine::get_stats)
+        .def("get_robot_states",     &SimEngine::get_robot_states)
         .def("get_hub_queue_lengths",&SimEngine::get_hub_queue_lengths);
 }

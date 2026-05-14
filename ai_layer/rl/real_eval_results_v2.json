@@ -1,0 +1,25 @@
+{
+  "version": "v2_gated",
+  "config": {
+    "robots": 100,
+    "duration": 28800,
+    "seeds": 3,
+    "recharge_gate": 40.0
+  },
+  "rule_based": {
+    "del_mean": 10141.0,
+    "del_std": 344.2392578812978,
+    "eng_mean": 1041.3991502126057,
+    "eng_std": 30.307695309052203
+  },
+  "rl_gated": {
+    "del_mean": 9198.666666666666,
+    "del_std": 820.8492891850218,
+    "eng_mean": 955.2898699442545,
+    "eng_std": 73.27966414711145
+  },
+  "delta": {
+    "deliveries_pct": -9.292311737829937,
+    "energy_pct": -8.268614416554081
+  }
+}

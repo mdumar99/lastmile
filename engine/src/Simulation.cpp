@@ -20,10 +20,8 @@ Simulation::Simulation(SimConfig cfg)
     if (!_graph.load(cfg.nodes_csv, cfg.edges_csv))
         throw std::runtime_error("Failed to load road graph");
 
-    if (!cfg.hubs_csv.empty())
-        load_hubs_from_csv(cfg.hubs_csv);
-    else
-        load_hubs_hardcoded();
+    if (!cfg.hubs_csv.empty()) load_hubs_from_csv(cfg.hubs_csv);
+    else                       load_hubs_hardcoded();
 
     std::uniform_int_distribution<std::size_t> nd(
         0, _graph.node_ids().size()-1);
@@ -34,6 +32,8 @@ Simulation::Simulation(SimConfig cfg)
         std::size_t rid = _robots.add(n.x, n.y,
             std::uniform_real_distribution<float>(60.0f,100.0f)(_rng));
         _robot_node.push_back(nid);
+        _robot_deliveries.push_back(0);
+        _robot_recharges.push_back(0);
         _qt.insert(static_cast<uint32_t>(rid), n.x, n.y);
         double jitter = std::uniform_real_distribution<double>(0.0,5.0)(_rng);
         _sched.push({jitter, EventType::DEPART,
@@ -96,18 +96,17 @@ void Simulation::load_hubs_from_csv(const std::string& path) {
               << " from " << path << "\n";
 }
 
-// ── Main loop ─────────────────────────────────────────────────
 void Simulation::run() {
     std::cout << std::fixed << std::setprecision(2);
     std::cout << "[SIM] Starting: " << _cfg.num_robots
-              << " robots, " << _cfg.sim_duration_s << "s\n\n";
+              << " robots, " << _cfg.sim_duration_s << "s"
+              << (_callback ? " [RL POLICY]" : " [RULE-BASED]") << "\n\n";
 
     while (!_sched.empty() &&
            _sched.peek_time() <= _cfg.sim_duration_s) {
         Event e = _sched.pop();
         _now = e.time;
         ++_event_count;
-
         switch (e.type) {
             case EventType::DEPART:        handle_depart(e);        break;
             case EventType::ARRIVE:        handle_arrive(e);        break;
@@ -116,15 +115,22 @@ void Simulation::run() {
             case EventType::DELIVERY_FAIL: handle_delivery_fail(e); break;
             case EventType::WEATHER_DELAY: handle_weather_delay(e); break;
         }
-
-        // Flush pending departs when batch is full
         if ((int)_pending_departs.size() >= _cfg.parallel_batch)
             flush_pending_departs();
     }
+    if (!_pending_departs.empty()) flush_pending_departs();
 
-    // Flush any remaining pending departs
-    if (!_pending_departs.empty())
-        flush_pending_departs();
+    // Write proto
+    if (_proto.enabled()) {
+        auto s = stats();
+        _proto.set_stats(s.total_deliveries, s.total_energy_kwh,
+                         s.recharge_events,  s.failed_paths,
+                         s.traffic_jams,     s.delivery_fails,
+                         s.weather_delays,   s.parallel_batches);
+        _proto.set_meta(_cfg.num_robots, _cfg.sim_duration_s,
+                        _cfg.hubs_csv.empty() ? "hardcoded" : "milp");
+        _proto.write();
+    }
 
     auto s = stats();
     std::cout << "\n[SIM] Done.\n";
@@ -138,41 +144,117 @@ void Simulation::run() {
     std::cout << "  Failed A* paths   : " << s.failed_paths       << "\n";
     std::cout << "  Quadtree updates  : " << _qt_updates          << "\n";
     std::cout << "  Parallel batches  : " << s.parallel_batches   << "\n";
-
-    // Write protobuf output
-    if (_proto.enabled()) {
-        _proto.set_stats(s.total_deliveries, s.total_energy_kwh,
-                         s.recharge_events, s.failed_paths,
-                         s.traffic_jams, s.delivery_fails,
-                         s.weather_delays, s.parallel_batches);
-        _proto.set_meta(_cfg.num_robots, _cfg.sim_duration_s,
-                        _cfg.hubs_csv.empty() ? "hardcoded" : "milp");
-        if (_proto.write())
-            std::cout << "  Proto written     : " << _cfg.proto_path
-                      << " (" << _proto.event_count() << " events)\n";
-    }
+    if (_callback)
+        std::cout << "  Policy decisions  : " << s.policy_decisions << "\n";
 }
 
-// ── Parallel path planning flush ──────────────────────────────
+// ── Decision making ────────────────────────────────────────────
+int Simulation::make_decision(uint32_t rid) {
+    if (!_callback) {
+        // Rule-based fallback
+        if (_robots.battery[rid] < _cfg.low_battery_thr) return 1;
+        return 0;
+    }
+
+    // Build state for callback
+    Hub& h = nearest_hub(_robots.x[rid], _robots.y[rid]);
+    float hub_dist = distance(_robots.x[rid], _robots.y[rid], h.x, h.y);
+
+    // Nearby robot count from quadtree
+    std::vector<uint32_t> nearby;
+    AABB range{_robots.x[rid], _robots.y[rid], 300.0f, 300.0f};
+    _qt.query(range, nearby);
+
+    // Max hub queue
+    auto queues  = get_hub_queue_lengths();
+    int  max_q   = queues.empty() ? 0 :
+                   *std::max_element(queues.begin(), queues.end());
+
+    RobotDecisionState state{
+        rid,
+        _robots.battery[rid],
+        _robots.x[rid], _robots.y[rid],
+        hub_dist,
+        _weather_speed_mult,
+        static_cast<float>(_now),
+        _robot_deliveries[rid],
+        _robot_recharges[rid],
+        static_cast<int>(nearby.size()),
+        max_q
+    };
+
+    ++_stats.policy_decisions;
+    return _callback(state);
+}
+
+// ── Event handlers ────────────────────────────────────────────
+void Simulation::handle_depart(const Event& e) {
+    uint32_t rid = e.robot_id;
+
+    // Traffic jam check (always applies regardless of policy)
+    std::uniform_real_distribution<float> prob(0.0f,1.0f);
+    if (prob(_rng) < _cfg.traffic_jam_prob) {
+        float jam = std::uniform_real_distribution<float>(30.0f,120.0f)(_rng);
+        _sched.push({_now, EventType::TRAFFIC_JAM,
+                     rid, _robot_node[rid], jam});
+        _sched.push({_now+jam, EventType::DEPART,
+                     rid, _robot_node[rid], 0.0f});
+        return;
+    }
+
+    // Get decision from policy or rule-based
+    int decision = make_decision(rid);
+
+    if (decision == 2) {
+        // WAIT — reschedule depart after short pause
+        double wait = std::uniform_real_distribution<double>(10.0,30.0)(_rng);
+        _sched.push({_now+wait, EventType::DEPART,
+                     rid, _robot_node[rid], 0.0f});
+        log_event(e, "policy_wait");
+        return;
+    }
+
+    if (decision == 1) {
+        // RECHARGE
+        Hub& h = nearest_hub(_robots.x[rid], _robots.y[rid]);
+        _pending_departs.push_back({e, h.node_id, true});
+        return;
+    }
+
+    // DELIVER (decision == 0)
+    const Node& origin = _graph.node(_robot_node[rid]);
+    uint32_t dest_nid  = 0;
+    float    best_dist = std::numeric_limits<float>::max();
+
+    std::uniform_int_distribution<std::size_t> nd(
+        0, _graph.node_ids().size()-1);
+
+    for (int attempt = 0; attempt < 20; ++attempt) {
+        uint32_t    cid = _graph.node_ids()[nd(_rng)];
+        const Node& cn  = _graph.node(cid);
+        float dx = cn.x-origin.x, dy = cn.y-origin.y;
+        float d  = std::sqrt(dx*dx+dy*dy);
+        if (d < MAX_DELIVERY_RADIUS && d > 50.0f && d < best_dist) {
+            best_dist = d; dest_nid = cid;
+        }
+    }
+    if (dest_nid == 0) dest_nid = _graph.node_ids()[nd(_rng)];
+
+    _pending_departs.push_back({e, dest_nid, false});
+}
+
 void Simulation::flush_pending_departs() {
     if (_pending_departs.empty()) return;
 
-    // Build path requests
     std::vector<PathRequest> requests;
     requests.reserve(_pending_departs.size());
-    for (const auto& pd : _pending_departs) {
-        requests.push_back({
-            pd.event.robot_id,
-            _robot_node[pd.event.robot_id],
-            pd.dest_nid
-        });
-    }
+    for (const auto& pd : _pending_departs)
+        requests.push_back({pd.event.robot_id,
+                            _robot_node[pd.event.robot_id], pd.dest_nid});
 
-    // Solve all paths in parallel via TBB
     auto responses = _planner.plan(requests);
     ++_stats.parallel_batches;
 
-    // Process results sequentially
     for (std::size_t i = 0; i < _pending_departs.size(); ++i) {
         const auto& pd   = _pending_departs[i];
         const auto& resp = responses[i];
@@ -193,69 +275,20 @@ void Simulation::flush_pending_departs() {
         _robots.total_energy_used[rid] += dist * 0.0001f;
 
         const Node& dest = _graph.node(pd.dest_nid);
-
         _qt.update(rid, _robots.x[rid], _robots.y[rid], dest.x, dest.y);
         ++_qt_updates;
 
         _robots.x[rid]      = dest.x;
         _robots.y[rid]      = dest.y;
         _robots.status[rid] = pd.to_hub
-            ? RobotStatus::RETURNING
-            : RobotStatus::DELIVERING;
+            ? RobotStatus::RETURNING : RobotStatus::DELIVERING;
 
-        EventType arrive_type = EventType::ARRIVE;
-        _sched.push({_now + travel, arrive_type,
+        _sched.push({_now+travel, EventType::ARRIVE,
                      rid, pd.dest_nid, 0.0f});
         log_event(pd.event,
                   pd.to_hub ? "low_battery->hub" : "depart->deliver");
     }
-
     _pending_departs.clear();
-}
-
-// ── Event handlers ────────────────────────────────────────────
-void Simulation::handle_depart(const Event& e) {
-    uint32_t rid = e.robot_id;
-
-    // Traffic jam check
-    std::uniform_real_distribution<float> prob(0.0f, 1.0f);
-    if (prob(_rng) < _cfg.traffic_jam_prob) {
-        float jam = std::uniform_real_distribution<float>(30.0f,120.0f)(_rng);
-        _sched.push({_now, EventType::TRAFFIC_JAM,
-                     rid, _robot_node[rid], jam});
-        _sched.push({_now+jam, EventType::DEPART,
-                     rid, _robot_node[rid], 0.0f});
-        return;
-    }
-
-    // Low battery → queue path to hub
-    if (_robots.battery[rid] < _cfg.low_battery_thr) {
-        Hub& h = nearest_hub(_robots.x[rid], _robots.y[rid]);
-        _pending_departs.push_back({e, h.node_id, true});
-        return;
-    }
-
-    // Normal delivery → pick destination, queue path
-    const Node& origin = _graph.node(_robot_node[rid]);
-    uint32_t dest_nid  = 0;
-    float    best_dist = std::numeric_limits<float>::max();
-
-    std::uniform_int_distribution<std::size_t> nd(
-        0, _graph.node_ids().size()-1);
-
-    for (int attempt = 0; attempt < 20; ++attempt) {
-        uint32_t    cid = _graph.node_ids()[nd(_rng)];
-        const Node& cn  = _graph.node(cid);
-        float dx = cn.x-origin.x, dy = cn.y-origin.y;
-        float d  = std::sqrt(dx*dx+dy*dy);
-        if (d < MAX_DELIVERY_RADIUS && d > 50.0f && d < best_dist) {
-            best_dist = d; dest_nid = cid;
-        }
-    }
-    if (dest_nid == 0)
-        dest_nid = _graph.node_ids()[nd(_rng)];
-
-    _pending_departs.push_back({e, dest_nid, false});
 }
 
 void Simulation::handle_arrive(const Event& e) {
@@ -272,6 +305,7 @@ void Simulation::handle_arrive(const Event& e) {
         _sched.push({_now+ctime, EventType::RECHARGE,
                      rid, e.node_id, 0.0f});
         ++_stats.recharge_events;
+        _robot_recharges[rid]++;
         log_event(e, "arrived_hub");
     } else {
         std::uniform_real_distribution<float> prob(0.0f,1.0f);
@@ -282,6 +316,7 @@ void Simulation::handle_arrive(const Event& e) {
         }
         ++_robots.deliveries_completed[rid];
         ++_stats.total_deliveries;
+        _robot_deliveries[rid]++;
         _robots.status[rid] = RobotStatus::IDLE;
         double rest = std::uniform_real_distribution<double>(2.0,8.0)(_rng);
         _sched.push({_now+rest, EventType::DEPART,
@@ -294,16 +329,14 @@ void Simulation::handle_recharge(const Event& e) {
     uint32_t rid = e.robot_id;
     _robots.battery[rid] = 100.0f;
     _robots.status[rid]  = RobotStatus::IDLE;
-    _sched.push({_now+1.0, EventType::DEPART,
-                 rid, e.node_id, 0.0f});
+    _sched.push({_now+1.0, EventType::DEPART, rid, e.node_id, 0.0f});
     log_event(e, "fully_charged");
 }
 
 void Simulation::handle_traffic_jam(const Event& e) {
     ++_stats.traffic_jams;
     _robots.status[e.robot_id] = RobotStatus::BLOCKED;
-    log_event(e, "traffic_jam_"
-              + std::to_string((int)e.payload) + "s");
+    log_event(e, "traffic_jam_" + std::to_string((int)e.payload) + "s");
 }
 
 void Simulation::handle_delivery_fail(const Event& e) {
@@ -311,8 +344,7 @@ void Simulation::handle_delivery_fail(const Event& e) {
     uint32_t rid = e.robot_id;
     _robots.status[rid] = RobotStatus::IDLE;
     double rest = std::uniform_real_distribution<double>(5.0,15.0)(_rng);
-    _sched.push({_now+rest, EventType::DEPART,
-                 rid, e.node_id, 0.0f});
+    _sched.push({_now+rest, EventType::DEPART, rid, e.node_id, 0.0f});
     log_event(e, "delivery_failed");
 }
 
@@ -327,8 +359,8 @@ void Simulation::handle_weather_delay(const Event& e) {
     _weather_speed_mult = sev(_rng);
     double dur = std::uniform_real_distribution<double>(600.0,1800.0)(_rng);
     _sched.push({_now+dur, EventType::WEATHER_DELAY, 0, 0, 1.0f});
-    log_event(e, "weather_speed_"
-              + std::to_string(_weather_speed_mult).substr(0,4));
+    log_event(e, "weather_speed_" +
+              std::to_string(_weather_speed_mult).substr(0,4));
 }
 
 float Simulation::distance(float x1,float y1,float x2,float y2) const {
@@ -347,22 +379,6 @@ Hub& Simulation::nearest_hub(float x, float y) {
 }
 
 void Simulation::log_event(const Event& e, const std::string& note) {
-    // Write to protobuf
-    if (_proto.enabled()) {
-        uint32_t rid = e.robot_id;
-        _proto.add_event(_now, eventTypeToString(e.type), rid,
-                         _robots.x[rid], _robots.y[rid],
-                         _robots.battery[rid],
-                         statusToString(_robots.status[rid]), note);
-    }
-    // Write to protobuf
-    if (_proto.enabled()) {
-        uint32_t rid = e.robot_id;
-        _proto.add_event(_now, eventTypeToString(e.type), rid,
-                         _robots.x[rid], _robots.y[rid],
-                         _robots.battery[rid],
-                         statusToString(_robots.status[rid]), note);
-    }
     if (!_log.is_open()) return;
     uint32_t rid = e.robot_id;
     _log << _now << ","
@@ -383,19 +399,14 @@ Simulation::Stats Simulation::stats() const {
     return s;
 }
 
-// ── RL query methods ──────────────────────────────────────────
-
 std::vector<std::vector<float>> Simulation::get_robot_states_raw() const {
     std::vector<std::vector<float>> out;
     out.reserve(_robots.size());
-    for (std::size_t i = 0; i < _robots.size(); ++i) {
-        out.push_back({
-            _robots.x[i],
-            _robots.y[i],
-            _robots.battery[i],
-            static_cast<float>(static_cast<uint8_t>(_robots.status[i]))
-        });
-    }
+    for (std::size_t i = 0; i < _robots.size(); ++i)
+        out.push_back({_robots.x[i], _robots.y[i],
+                       _robots.battery[i],
+                       static_cast<float>(
+                           static_cast<uint8_t>(_robots.status[i]))});
     return out;
 }
 
@@ -403,14 +414,13 @@ std::vector<int> Simulation::get_hub_queue_lengths() const {
     std::vector<int> queues(_hubs.size(), 0);
     for (std::size_t i = 0; i < _robots.size(); ++i) {
         if (_robots.status[i] == RobotStatus::CHARGING) {
-            // Find which hub this robot is at
             float best_d = std::numeric_limits<float>::max();
             int   best_h = 0;
             for (std::size_t h = 0; h < _hubs.size(); ++h) {
-                float dx = _robots.x[i] - _hubs[h].x;
-                float dy = _robots.y[i] - _hubs[h].y;
-                float d  = dx*dx + dy*dy;
-                if (d < best_d) { best_d = d; best_h = (int)h; }
+                float dx = _robots.x[i]-_hubs[h].x;
+                float dy = _robots.y[i]-_hubs[h].y;
+                float d  = dx*dx+dy*dy;
+                if (d < best_d) { best_d=d; best_h=(int)h; }
             }
             queues[best_h]++;
         }

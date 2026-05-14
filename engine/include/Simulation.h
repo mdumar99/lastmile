@@ -10,6 +10,7 @@
 #include <fstream>
 #include <random>
 #include <vector>
+#include <functional>
 
 struct Hub {
     uint32_t id;
@@ -34,10 +35,32 @@ struct SimConfig {
     std::string hubs_csv           = "";
 };
 
+// ── Decision callback ──────────────────────────────────────────
+// Called at each DEPART event with robot state.
+// Returns: 0=DELIVER, 1=RECHARGE, 2=WAIT
+// If nullptr, uses rule-based logic.
+struct RobotDecisionState {
+    uint32_t robot_id;
+    float    battery;
+    float    x, y;
+    float    hub_dist;
+    float    weather_mult;
+    float    sim_time;
+    int      deliveries_done;
+    int      recharges_done;
+    int      nearby_robots;
+    int      max_hub_queue;
+};
+
+using DecisionCallback = std::function<int(const RobotDecisionState&)>;
+
 class Simulation {
 public:
     explicit Simulation(SimConfig cfg);
     void run();
+
+    // Register Python policy callback
+    void set_decision_callback(DecisionCallback cb) { _callback = cb; }
 
     struct Stats {
         uint32_t total_deliveries;
@@ -48,10 +71,10 @@ public:
         uint32_t delivery_fails;
         uint32_t weather_delays;
         uint32_t parallel_batches;
+        uint32_t policy_decisions;  // how many times callback was called
     };
     Stats stats() const;
 
-    // ── RL query methods ──────────────────────────────────────
     std::vector<std::vector<float>> get_robot_states_raw() const;
     std::vector<int>                get_hub_queue_lengths() const;
 
@@ -66,9 +89,12 @@ private:
     ProtoWriter     _proto;
     double          _now{0.0};
     std::mt19937    _rng;
+    DecisionCallback _callback{nullptr};
 
     std::vector<Hub>      _hubs;
     std::vector<uint32_t> _robot_node;
+    std::vector<int>      _robot_deliveries;  // per-robot delivery count
+    std::vector<int>      _robot_recharges;   // per-robot recharge count
     std::ofstream         _log;
     int                   _event_count{0};
     int                   _qt_updates{0};
@@ -86,6 +112,11 @@ private:
     void load_hubs_hardcoded();
     void seed_weather_events();
     void flush_pending_departs();
+
+    // Makes a decision for one robot — uses callback if set,
+    // otherwise falls back to rule-based logic
+    // Returns: 0=DELIVER, 1=RECHARGE, 2=WAIT
+    int  make_decision(uint32_t rid);
 
     void handle_depart        (const Event& e);
     void handle_arrive        (const Event& e);

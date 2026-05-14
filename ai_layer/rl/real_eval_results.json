@@ -1,0 +1,26 @@
+{
+  "config": {
+    "robots": 100,
+    "duration": 28800,
+    "seeds": 3
+  },
+  "rule_based": {
+    "deliveries_mean": 10175.666666666666,
+    "deliveries_std": 206.7241855441421,
+    "energy_mean": 1051.29119904836,
+    "energy_std": 18.266323326261457,
+    "recharges_mean": 200.0
+  },
+  "rl_policy": {
+    "deliveries_mean": 9016.0,
+    "deliveries_std": 84.85674202246199,
+    "energy_mean": 1024.5422061284382,
+    "energy_std": 7.613515304380295,
+    "recharges_mean": 17282.0
+  },
+  "delta": {
+    "deliveries_pct": -11.396468699839481,
+    "energy_pct": -2.54439425956722,
+    "recharges": 17082.0
+  }
+}

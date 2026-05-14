@@ -1,0 +1,26 @@
+{
+  "version": "v3_zone_gated",
+  "config": {
+    "robots": 100,
+    "duration": 28800,
+    "seeds": 3,
+    "rl_lower": 20.0,
+    "rl_upper": 35.0
+  },
+  "rule_based": {
+    "del_mean": 9755.0,
+    "del_std": 170.2762461413805,
+    "eng_mean": 1006.4701617558798,
+    "eng_std": 9.881373257937762
+  },
+  "rl_zone": {
+    "del_mean": 10138.333333333334,
+    "del_std": 226.9366039717309,
+    "eng_mean": 1039.9109938939412,
+    "eng_std": 9.977754045869203
+  },
+  "delta": {
+    "deliveries_pct": 3.9296087476507835,
+    "energy_pct": 3.322585547863714
+  }
+}
